@@ -7,6 +7,7 @@ import uuid
 import threading
 import unicodedata
 import re
+import io
 import speech_recognition as sr
 
 # ==========================================
@@ -346,11 +347,16 @@ def reconocer_voz(audio):
 
     reconocedor = sr.Recognizer()
 
-    audio_datos = sr.AudioData(
-        audio.getvalue(),
-        sample_rate=audio.sample_rate,
-        sample_width=audio.sample_width
-    )
+    # Convertir el archivo de Streamlit en un archivo
+    # que SpeechRecognition pueda leer.
+
+    audio_bytes = io.BytesIO(audio.getvalue())
+
+    with sr.AudioFile(audio_bytes) as fuente:
+
+        audio_datos = reconocedor.record(fuente)
+
+    # Convertir el audio a texto en español colombiano.
 
     texto = reconocedor.recognize_google(
         audio_datos,
@@ -562,8 +568,12 @@ if audio:
         type="primary"
     ):
 
+        # Limpiar resultados y errores anteriores
+
         st.session_state.pop("resultado_voz", None)
         st.session_state.pop("error_voz", None)
+        st.session_state.pop("error_voz_audio", None)
+        st.session_state.pop("texto_reconocido", None)
 
         try:
 
@@ -591,11 +601,11 @@ if audio:
                 "Intenta hablar más claro."
             )
 
-        except sr.RequestError:
+        except sr.RequestError as e:
 
             st.session_state["error_voz_audio"] = (
                 "No fue posible conectar con el servicio "
-                "de reconocimiento de voz. Intenta nuevamente."
+                f"de reconocimiento de voz: {e}"
             )
 
         except Exception as e:
