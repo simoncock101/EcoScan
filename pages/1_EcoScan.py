@@ -7,6 +7,13 @@ import uuid
 import threading
 import unicodedata
 import re
+import json
+import io
+
+from PIL import Image
+from google import genai
+from google.genai import types
+
 
 st.set_page_config(
     page_title="EcoScan",
@@ -15,7 +22,7 @@ st.set_page_config(
 )
 
 # ==========================================
-# CONFIGURACION MQTT
+# CONFIGURACION
 # ==========================================
 
 BROKER = "broker.hivemq.com"
@@ -24,6 +31,12 @@ PORT = 1883
 TOPIC_CONTROL = "ecoscan/estacion/control"
 TOPIC_ESTADO = "ecoscan/estacion/estado"
 
+MODELO_GEMINI = "gemini-flash-latest"
+
+
+# ==========================================
+# CONEXION MQTT
+# ==========================================
 
 @st.cache_resource
 def crear_conexion():
@@ -60,23 +73,38 @@ def crear_conexion():
 
 
 # ==========================================
+# CONEXION GEMINI
+# ==========================================
+
+@st.cache_resource
+def crear_cliente_gemini():
+    return genai.Client(
+        api_key=st.secrets["GEMINI_API_KEY"]
+    )
+
+
+# ==========================================
 # NORMALIZAR TEXTO
 # ==========================================
 
 def normalizar(texto):
     texto = texto.lower().strip()
-
     texto = unicodedata.normalize("NFD", texto)
 
     texto = "".join(
-        caracter for caracter in texto
-        if unicodedata.category(caracter) != "Mn"
+        c for c in texto
+        if unicodedata.category(c) != "Mn"
     )
 
     texto = re.sub(r"[^a-z0-9\s]", " ", texto)
     texto = re.sub(r"\s+", " ", texto)
 
     return texto.strip()
+
+
+def contiene_palabra(texto, palabra):
+    patron = r"\b" + re.escape(palabra) + r"\b"
+    return re.search(patron, texto) is not None
 
 
 # ==========================================
@@ -175,7 +203,6 @@ RESIDUOS_BLANCO = [
     "tetrapak"
 ]
 
-# Materiales que requieren limpieza antes de aprovecharse
 MATERIALES_CONDICIONALES = [
     "caja de pizza",
     "envase de comida",
@@ -188,10 +215,6 @@ MATERIALES_CONDICIONALES = [
     "plastico",
     "vidrio"
 ]
-
-# ==========================================
-# RESIDUOS ESPECIALES
-# ==========================================
 
 RESIDUOS_ESPECIALES = [
     "camiseta",
@@ -223,13 +246,8 @@ RESIDUOS_ESPECIALES = [
 
 
 # ==========================================
-# CLASIFICADOR
+# CLASIFICADOR POR TEXTO
 # ==========================================
-
-def contiene_palabra(texto, palabra):
-    patron = r"\b" + re.escape(palabra) + r"\b"
-    return re.search(patron, texto) is not None
-
 
 def clasificar_residuo(descripcion):
 
@@ -238,7 +256,6 @@ def clasificar_residuo(descripcion):
     if not texto:
         return None
 
-    # 1. Detectar residuos especiales
     for residuo in RESIDUOS_ESPECIALES:
         if contiene_palabra(texto, residuo):
             return {
@@ -251,7 +268,6 @@ def clasificar_residuo(descripcion):
                 )
             }
 
-    # 2. Detectar residuos sanitarios o contaminados
     for residuo in RESIDUOS_NEGROS:
         if contiene_palabra(texto, residuo):
             return {
@@ -261,16 +277,9 @@ def clasificar_residuo(descripcion):
             }
 
     palabras_contaminacion = [
-        "sucio",
-        "sucia",
-        "grasoso",
-        "grasosa",
-        "contaminado",
-        "contaminada",
-        "con grasa",
-        "con comida",
-        "con aceite",
-        "mojado"
+        "sucio", "sucia", "grasoso", "grasosa",
+        "contaminado", "contaminada", "con grasa",
+        "con comida", "con aceite", "mojado"
     ]
 
     tiene_contaminacion = any(
@@ -290,7 +299,6 @@ def clasificar_residuo(descripcion):
                     )
                 }
 
-    # 3. Detectar residuos organicos
     for residuo in RESIDUOS_VERDES:
         if contiene_palabra(texto, residuo):
             return {
@@ -299,7 +307,6 @@ def clasificar_residuo(descripcion):
                 "mensaje": "Este residuo puede ir a la caneca verde."
             }
 
-    # 4. Detectar residuos aprovechables
     for residuo in RESIDUOS_BLANCO:
         if contiene_palabra(texto, residuo):
             return {
@@ -311,47 +318,203 @@ def clasificar_residuo(descripcion):
                 )
             }
 
-    # 5. No identificado
     return None
+
+
+# ==========================================
+# IDENTIFICACION POR IMAGEN CON GEMINI
+# ==========================================
+
+def analizar_imagen(imagen):
+
+    cliente = crear_cliente_gemini()
+
+    instrucciones = """
+    Eres EcoScan, un asistente especializado en separar residuos
+    siguiendo el codigo de colores colombiano.
+
+    Analiza la imagen e identifica el residuo principal.
+
+    Reglas de clasificacion:
+
+    BLANCA:
+    Materiales aprovechables como papel, carton, plastico,
+    vidrio y metales, siempre que esten limpios y secos.
+
+    NEGRA:
+    Residuos no aprovechables, sanitarios o materiales
+    contaminados que no puedan recuperarse.
+
+    VERDE:
+    Residuos organicos aprovechables, como restos de comida
+    y residuos vegetales.
+
+    ESPECIAL:
+    Pilas, medicamentos, aparatos electronicos, bombillos,
+    quimicos, aceite usado y otros residuos que necesitan
+    puntos de recoleccion o rutas especiales.
+    La ropa y los zapatos deben orientarse preferiblemente
+    a reutilizacion, donacion o recoleccion textil.
+
+    IMPORTANTE:
+    - No inventes objetos que no se vean.
+    - Si no puedes identificar el objeto, usa NO_IDENTIFICADO.
+    - Si no puedes determinar su estado de limpieza, explica
+      que debe verificarse antes de depositarlo.
+    - No clasifiques automaticamente un material como blanco
+      si parece estar sucio o contaminado.
+    - Devuelve exclusivamente un JSON valido.
+
+    Usa exactamente esta estructura:
+
+    {
+      "residuo": "nombre corto del objeto",
+      "caneca": "BLANCA, NEGRA, VERDE, ESPECIAL o NO_IDENTIFICADO",
+      "tipo": "tipo de residuo",
+      "mensaje": "explicacion breve en español",
+      "confianza": "ALTA, MEDIA o BAJA"
+    }
+    """
+
+    respuesta = cliente.models.generate_content(
+        model=MODELO_GEMINI,
+        contents=[
+            instrucciones,
+            imagen
+        ],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.1
+        )
+    )
+
+    resultado = json.loads(respuesta.text)
+
+    canecas_validas = [
+        "BLANCA",
+        "NEGRA",
+        "VERDE",
+        "ESPECIAL",
+        "NO_IDENTIFICADO"
+    ]
+
+    caneca = str(resultado.get("caneca", "")).upper()
+
+    if caneca not in canecas_validas:
+        raise ValueError("Gemini devolvio una clasificacion no valida.")
+
+    resultado["caneca"] = caneca
+    resultado["residuo"] = str(
+        resultado.get("residuo", "Residuo")
+    )
+
+    resultado["tipo"] = str(
+        resultado.get("tipo", "No identificado")
+    )
+
+    resultado["mensaje"] = str(
+        resultado.get("mensaje", "")
+    )
+
+    resultado["confianza"] = str(
+        resultado.get("confianza", "BAJA")
+    ).upper()
+
+    return resultado
+
+
+# ==========================================
+# FUNCION PARA ENVIAR A ECOSTATION
+# ==========================================
+
+def enviar_a_estacion(residuo, caneca):
+
+    client, mensajes, conectado, suscrito = crear_conexion()
+
+    if not conectado.wait(timeout=10):
+        return False, "No se pudo conectar al broker MQTT."
+
+    if not suscrito.wait(timeout=10):
+        return False, "No se pudo suscribir al tópico de respuestas."
+
+    while not mensajes.empty():
+        try:
+            mensajes.get_nowait()
+        except queue.Empty:
+            break
+
+    # El LCD muestra maximo 8 caracteres
+    residuo_mqtt = normalizar(residuo).upper()
+    residuo_mqtt = re.sub(r"[^A-Z0-9]", "_", residuo_mqtt)
+    residuo_mqtt = residuo_mqtt[:8]
+
+    mensaje = f"{residuo_mqtt}|{caneca}"
+
+    resultado_envio = client.publish(
+        TOPIC_CONTROL,
+        mensaje
+    )
+
+    if resultado_envio.rc != mqtt.MQTT_ERR_SUCCESS:
+        return False, "No se pudo enviar la orden MQTT."
+
+    limite = time.time() + 10
+
+    while time.time() < limite:
+        try:
+            dato = mensajes.get(timeout=0.5)
+
+            if dato == f"OK|{residuo_mqtt}|{caneca}":
+                return True, dato
+
+        except queue.Empty:
+            pass
+
+    return False, "La estación no confirmó la operación."
 
 
 # ==========================================
 # INTERFAZ PRINCIPAL
 # ==========================================
 
-st.title("♻️ Identifica tu residuo")
+st.title("♻️ EcoScan")
 
 st.write(
-    "EcoScan te ayuda a identificar residuos y encontrar "
-    "la forma correcta de separarlos."
+    "Identifica tus residuos mediante texto o imágenes "
+    "y descubre cómo separarlos correctamente."
 )
 
 st.divider()
 
-st.subheader("🔎 Identificación por texto")
+
+# ==========================================
+# IDENTIFICACION POR TEXTO
+# ==========================================
+
+st.subheader("✍️ Identificación por texto")
 
 descripcion = st.text_input(
     "¿Qué residuo quieres identificar?",
-    placeholder="Ejemplo: botella de gaseosa, camiseta vieja, caja de cartón..."
+    placeholder="Ejemplo: botella de gaseosa, camiseta vieja..."
 )
 
-if st.button("🔍 Identificar residuo", type="primary"):
+if st.button("🔍 Identificar por texto", type="primary"):
 
-    st.session_state.pop("resultado_residuo", None)
-    st.session_state.pop("descripcion_residuo", None)
-    st.session_state.pop("error_clasificacion", None)
+    st.session_state.pop("resultado_texto", None)
 
     resultado = clasificar_residuo(descripcion)
 
     if resultado is None:
-        st.session_state["error_clasificacion"] = True
+        st.session_state["error_texto"] = True
     else:
-        st.session_state["error_clasificacion"] = False
-        st.session_state["resultado_residuo"] = resultado
-        st.session_state["descripcion_residuo"] = descripcion.upper()
+        st.session_state["error_texto"] = False
+        st.session_state["resultado_texto"] = {
+            **resultado,
+            "residuo": descripcion
+        }
 
 
-if st.session_state.get("error_clasificacion", False):
+if st.session_state.get("error_texto", False):
     st.warning(
         "No pudimos identificar este residuo. "
         "Prueba con una descripción más específica."
@@ -359,107 +522,148 @@ if st.session_state.get("error_clasificacion", False):
 
 
 # ==========================================
-# MOSTRAR RESULTADO
+# RESULTADO TEXTO
 # ==========================================
 
-resultado = st.session_state.get("resultado_residuo")
+resultado_texto = st.session_state.get("resultado_texto")
 
-if resultado:
-
-    caneca = resultado["caneca"]
-    residuo = st.session_state["descripcion_residuo"]
+if resultado_texto:
 
     st.divider()
-    st.subheader("Resultado de identificación")
+    st.subheader("Resultado por texto")
 
-    st.success(f"Residuo identificado: {residuo}")
+    st.success(
+        f"Residuo identificado: {resultado_texto['residuo']}"
+    )
+
+    caneca = resultado_texto["caneca"]
 
     if caneca == "BLANCA":
         st.markdown("## ⚪ Caneca BLANCA")
-
     elif caneca == "NEGRA":
         st.markdown("## ⚫ Caneca NEGRA")
-
     elif caneca == "VERDE":
         st.markdown("## 🟢 Caneca VERDE")
-
     else:
-        st.markdown("## ♻️ Residuo de manejo especial")
+        st.markdown("## ♻️ Residuo especial")
 
-    st.write(resultado["mensaje"])
-
-    # ======================================
-    # ENVIAR A ESTACION
-    # ======================================
+    st.write(resultado_texto["mensaje"])
 
     if caneca:
 
-        if st.button("🚀 Enviar a EcoStation", type="primary"):
+        if st.button("🚀 Enviar resultado de texto a EcoStation"):
 
-            try:
-                client, mensajes, conectado, suscrito = crear_conexion()
-
-                if not conectado.wait(timeout=10):
-                    st.error("No se pudo conectar al broker MQTT.")
-                    st.stop()
-
-                if not suscrito.wait(timeout=10):
-                    st.error("No se pudo suscribir al tópico de respuestas.")
-                    st.stop()
-
-                # Limpiar respuestas anteriores
-                while not mensajes.empty():
-                    try:
-                        mensajes.get_nowait()
-                    except queue.Empty:
-                        break
-
-                # Preparar nombre corto para LCD
-                residuo_mqtt = normalizar(descripcion).upper()
-                residuo_mqtt = residuo_mqtt[:8].replace(" ", "_")
-
-                mensaje = f"{residuo_mqtt}|{caneca}"
-
-                resultado_envio = client.publish(
-                    TOPIC_CONTROL,
-                    mensaje
+            with st.spinner("Enviando a EcoStation..."):
+                correcto, respuesta = enviar_a_estacion(
+                    resultado_texto["residuo"],
+                    caneca
                 )
 
-                if resultado_envio.rc == mqtt.MQTT_ERR_SUCCESS:
+            if correcto:
+                st.success(f"EcoStation confirmó: {respuesta}")
+            else:
+                st.warning(respuesta)
 
-                    st.info(f"Orden enviada a EcoStation: {mensaje}")
 
-                    respuesta = None
-                    limite = time.time() + 10
+# ==========================================
+# IDENTIFICACION POR IMAGEN
+# ==========================================
 
-                    with st.spinner("Esperando respuesta del ESP32..."):
+st.divider()
+st.subheader("📷 Identificación por imagen")
 
-                        while time.time() < limite:
-                            try:
-                                dato = mensajes.get(timeout=0.5)
+st.write(
+    "Carga una fotografía del residuo para que la inteligencia "
+    "artificial lo analice."
+)
 
-                                if dato == f"OK|{residuo_mqtt}|{caneca}":
-                                    respuesta = dato
-                                    break
+archivo = st.file_uploader(
+    "Selecciona una fotografía",
+    type=["jpg", "jpeg", "png", "webp"],
+    key="imagen_residuo"
+)
 
-                            except queue.Empty:
-                                pass
+if archivo:
 
-                    if respuesta:
-                        st.success(
-                            f"¡EcoStation confirmó la operación! {respuesta}"
-                        )
-                    else:
-                        st.warning(
-                            "La orden fue enviada, pero no recibimos "
-                            "confirmación de la estación."
-                        )
+    imagen = Image.open(io.BytesIO(archivo.getvalue())).convert("RGB")
 
-                else:
-                    st.error("No se pudo enviar la orden MQTT.")
+    st.image(
+        imagen,
+        caption="Imagen seleccionada",
+        use_container_width=True
+    )
 
-            except Exception as e:
-                st.error(f"Error de comunicación: {e}")
+    if st.button("🤖 Analizar imagen con Gemini", type="primary"):
+
+        st.session_state.pop("resultado_imagen", None)
+
+        try:
+            with st.spinner("Gemini está analizando el residuo..."):
+
+                resultado = analizar_imagen(imagen)
+
+                st.session_state["resultado_imagen"] = resultado
+
+        except Exception as e:
+            st.error(
+                "No fue posible analizar la imagen. "
+                "Verifica la conexión y la configuración de Gemini."
+            )
+            st.caption(str(e))
+
+
+# ==========================================
+# MOSTRAR RESULTADO DE IMAGEN
+# ==========================================
+
+resultado_imagen = st.session_state.get("resultado_imagen")
+
+if resultado_imagen:
+
+    st.divider()
+    st.subheader("Resultado del análisis visual")
+
+    st.success(
+        f"Residuo identificado: {resultado_imagen['residuo']}"
+    )
+
+    caneca = resultado_imagen["caneca"]
+
+    if caneca == "BLANCA":
+        st.markdown("## ⚪ Caneca BLANCA")
+    elif caneca == "NEGRA":
+        st.markdown("## ⚫ Caneca NEGRA")
+    elif caneca == "VERDE":
+        st.markdown("## 🟢 Caneca VERDE")
+    elif caneca == "ESPECIAL":
+        st.markdown("## ♻️ Residuo de manejo especial")
+    else:
+        st.markdown("## ❓ Residuo no identificado")
+
+    st.write(resultado_imagen["mensaje"])
+
+    st.caption(
+        f"Tipo: {resultado_imagen['tipo']} | "
+        f"Confianza estimada: {resultado_imagen['confianza']}"
+    )
+
+    if caneca in ["BLANCA", "NEGRA", "VERDE"]:
+
+        if st.button("🚀 Enviar resultado de imagen a EcoStation"):
+
+            with st.spinner("Enviando a EcoStation..."):
+
+                correcto, respuesta = enviar_a_estacion(
+                    resultado_imagen["residuo"],
+                    caneca
+                )
+
+            if correcto:
+                st.success(
+                    f"¡EcoStation confirmó la operación! {respuesta}"
+                )
+            else:
+                st.warning(respuesta)
 
 
 # ==========================================
@@ -467,7 +671,6 @@ if resultado:
 # ==========================================
 
 st.divider()
-
 st.subheader("🗑️ Código de separación colombiano")
 
 col1, col2, col3 = st.columns(3)
@@ -482,8 +685,7 @@ with col1:
 with col2:
     st.markdown("### ⚫ Negra")
     st.write(
-        "Residuos no aprovechables y materiales "
-        "contaminados."
+        "Residuos no aprovechables y materiales contaminados."
     )
 
 with col3:
@@ -495,5 +697,5 @@ with col3:
 st.divider()
 
 st.caption(
-    "EcoScan | Reciclaje inteligente multimodal"
+    "EcoScan | Identificación multimodal inteligente"
 )
