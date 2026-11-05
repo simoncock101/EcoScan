@@ -6,6 +6,7 @@ import time
 import uuid
 import threading
 import unicodedata
+import re
 
 st.set_page_config(
     page_title="EcoScan",
@@ -13,9 +14,9 @@ st.set_page_config(
     layout="wide"
 )
 
-# =====================================
+# ==========================================
 # CONFIGURACION MQTT
-# =====================================
+# ==========================================
 
 BROKER = "broker.hivemq.com"
 PORT = 1883
@@ -58,192 +59,408 @@ def crear_conexion():
     return client, mensajes, conectado, suscrito
 
 
-# =====================================
-# CLASIFICACION DE RESIDUOS
-# =====================================
+# ==========================================
+# NORMALIZAR TEXTO
+# ==========================================
 
 def normalizar(texto):
     texto = texto.lower().strip()
+
     texto = unicodedata.normalize("NFD", texto)
-    return "".join(
-        c for c in texto
-        if unicodedata.category(c) != "Mn"
+
+    texto = "".join(
+        caracter for caracter in texto
+        if unicodedata.category(caracter) != "Mn"
     )
 
+    texto = re.sub(r"[^a-z0-9\s]", " ", texto)
+    texto = re.sub(r"\s+", " ", texto)
 
-def clasificar_residuo(texto):
+    return texto.strip()
 
-    texto = normalizar(texto)
 
-    ejemplos = {
-        "BLANCA": [
-            "botella plastica", "botella de plastico",
-            "botella pet", "botella de agua",
-            "papel limpio", "carton", "caja de carton",
-            "lata", "lata de aluminio", "vidrio",
-            "frasco de vidrio", "envase limpio",
-            "periodico", "revista"
-        ],
+# ==========================================
+# CATALOGO DE RESIDUOS
+# ==========================================
 
-        "NEGRA": [
-            "servilleta", "papel higienico",
-            "papel sucio", "papel contaminado",
-            "panal", "colilla", "icopor sucio",
-            "empaque sucio", "residuo sanitario"
-        ],
+RESIDUOS_VERDES = [
+    "cascara de banano",
+    "cascara de platano",
+    "cascara de naranja",
+    "cascara de huevo",
+    "cascara de papa",
+    "cascara de fruta",
+    "restos de comida",
+    "sobras de comida",
+    "restos de alimentos",
+    "residuos organicos",
+    "residuo organico",
+    "borra de cafe",
+    "posos de cafe",
+    "bolsa de te",
+    "hojas secas",
+    "flores marchitas",
+    "pasto",
+    "hierba",
+    "frutas",
+    "verduras",
+    "vegetales",
+    "arroz",
+    "pasta cocida",
+    "pan",
+    "cascaras",
+    "comida sobrante"
+]
 
-        "VERDE": [
-            "cascara", "cascara de banano",
-            "cascara de platano", "cascara de huevo",
-            "restos de comida", "comida",
-            "fruta", "verdura", "hojas",
-            "residuos organicos", "borra de cafe"
-        ]
-    }
+RESIDUOS_NEGROS = [
+    "papel higienico",
+    "papel sanitario",
+    "servilleta usada",
+    "servilleta sucia",
+    "papel contaminado",
+    "papel grasoso",
+    "papel con grasa",
+    "panal",
+    "panales",
+    "toalla higienica",
+    "tampon",
+    "colilla de cigarrillo",
+    "tapabocas usado",
+    "residuos sanitarios",
+    "papel encerado",
+    "papel metalizado",
+    "empaque contaminado",
+    "empaque sucio",
+    "icopor sucio",
+    "algodon usado",
+    "curita usada",
+    "barrido",
+    "polvo"
+]
 
-    for caneca, palabras in ejemplos.items():
-        for palabra in palabras:
-            if palabra in texto:
-                return caneca
+RESIDUOS_BLANCO = [
+    "botella de plastico",
+    "botella plastica",
+    "botella pet",
+    "botella de agua",
+    "botella de gaseosa",
+    "envase plastico limpio",
+    "envase de plastico",
+    "recipiente plastico limpio",
+    "vaso plastico limpio",
+    "bolsa plastica limpia",
+    "plastico limpio",
+    "papel limpio",
+    "hoja de papel",
+    "papel blanco",
+    "periodico",
+    "revista",
+    "cuaderno",
+    "carton limpio",
+    "caja de carton limpia",
+    "caja de cereal",
+    "carton",
+    "vidrio",
+    "frasco de vidrio",
+    "botella de vidrio",
+    "tarro de vidrio",
+    "lata de aluminio",
+    "lata de gaseosa",
+    "lata de cerveza",
+    "lata de atun limpia",
+    "aluminio",
+    "metal limpio",
+    "chatarra metalica",
+    "envase tetrapak limpio",
+    "tetrapak"
+]
 
+# Materiales que requieren limpieza antes de aprovecharse
+MATERIALES_CONDICIONALES = [
+    "caja de pizza",
+    "envase de comida",
+    "recipiente de comida",
+    "frasco",
+    "botella",
+    "lata",
+    "carton",
+    "papel",
+    "plastico",
+    "vidrio"
+]
+
+# ==========================================
+# RESIDUOS ESPECIALES
+# ==========================================
+
+RESIDUOS_ESPECIALES = [
+    "camiseta",
+    "camisa",
+    "ropa",
+    "pantalon",
+    "jean",
+    "zapatos",
+    "tenis",
+    "medicamento",
+    "medicamentos",
+    "pila",
+    "pilas",
+    "bateria",
+    "baterias",
+    "bombillo",
+    "bombillos",
+    "computador",
+    "celular",
+    "telefono",
+    "electrodomestico",
+    "aceite usado",
+    "aceite de cocina usado",
+    "pintura",
+    "quimico",
+    "residuo electronico",
+    "aparato electronico"
+]
+
+# ==========================================
+# CLASIFICADOR
+# ==========================================
+
+def contiene_palabra(texto, palabra):
+    patron = r"\b" + re.escape(palabra) + r"\b"
+    return re.search(patron, texto) is not None
+
+
+def clasificar_residuo(descripcion):
+
+    texto = normalizar(descripcion)
+
+    if not texto:
+        return None
+
+    # 1. Detectar residuos especiales
+    for residuo in RESIDUOS_ESPECIALES:
+        if contiene_palabra(texto, residuo):
+            return {
+                "caneca": None,
+                "tipo": "ESPECIAL",
+                "mensaje": (
+                    "Este residuo necesita una ruta especial. "
+                    "Considera reutilizarlo, donarlo o llevarlo "
+                    "a un punto de recoleccion autorizado."
+                )
+            }
+
+    # 2. Detectar residuos sanitarios o contaminados
+    for residuo in RESIDUOS_NEGROS:
+        if contiene_palabra(texto, residuo):
+            return {
+                "caneca": "NEGRA",
+                "tipo": "NO APROVECHABLE",
+                "mensaje": "Deposita este residuo en la caneca negra."
+            }
+
+    palabras_contaminacion = [
+        "sucio",
+        "sucia",
+        "grasoso",
+        "grasosa",
+        "contaminado",
+        "contaminada",
+        "con grasa",
+        "con comida",
+        "con aceite",
+        "mojado"
+    ]
+
+    tiene_contaminacion = any(
+        contiene_palabra(texto, palabra)
+        for palabra in palabras_contaminacion
+    )
+
+    if tiene_contaminacion:
+        for material in MATERIALES_CONDICIONALES:
+            if contiene_palabra(texto, material):
+                return {
+                    "caneca": "NEGRA",
+                    "tipo": "NO APROVECHABLE",
+                    "mensaje": (
+                        "El material presenta contaminacion "
+                        "y no se puede aprovechar en estas condiciones."
+                    )
+                }
+
+    # 3. Detectar residuos organicos
+    for residuo in RESIDUOS_VERDES:
+        if contiene_palabra(texto, residuo):
+            return {
+                "caneca": "VERDE",
+                "tipo": "ORGANICO",
+                "mensaje": "Este residuo puede ir a la caneca verde."
+            }
+
+    # 4. Detectar residuos aprovechables
+    for residuo in RESIDUOS_BLANCO:
+        if contiene_palabra(texto, residuo):
+            return {
+                "caneca": "BLANCA",
+                "tipo": "APROVECHABLE",
+                "mensaje": (
+                    "Deposita este residuo limpio y seco "
+                    "en la caneca blanca."
+                )
+            }
+
+    # 5. No identificado
     return None
 
 
-# =====================================
-# INTERFAZ
-# =====================================
+# ==========================================
+# INTERFAZ PRINCIPAL
+# ==========================================
 
-st.title("📷 EcoScan")
+st.title("♻️ Identifica tu residuo")
 
 st.write(
-    "Tu asistente inteligente para identificar y separar residuos."
+    "EcoScan te ayuda a identificar residuos y encontrar "
+    "la forma correcta de separarlos."
 )
 
 st.divider()
 
-st.subheader("♻️ Identifica tu residuo")
-
-st.write(
-    "Escribe el nombre o describe el residuo que deseas clasificar."
-)
+st.subheader("🔎 Identificación por texto")
 
 descripcion = st.text_input(
     "¿Qué residuo quieres identificar?",
-    placeholder="Ejemplo: botella de plástico"
+    placeholder="Ejemplo: botella de gaseosa, camiseta vieja, caja de cartón..."
 )
 
 if st.button("🔍 Identificar residuo", type="primary"):
 
-    if not descripcion.strip():
-        st.warning("Escribe primero una descripción.")
+    st.session_state.pop("resultado_residuo", None)
+    st.session_state.pop("descripcion_residuo", None)
 
+    resultado = clasificar_residuo(descripcion)
+
+    if resultado is None:
+        st.session_state["error_clasificacion"] = True
     else:
-        caneca = clasificar_residuo(descripcion)
+        st.session_state["error_clasificacion"] = False
+        st.session_state["resultado_residuo"] = resultado
+        st.session_state["descripcion_residuo"] = descripcion.upper()
 
-        if caneca is None:
-            st.warning(
-                "No pudimos identificar este residuo. "
-                "Intenta describirlo de otra manera."
-            )
 
-        else:
-            st.session_state["residuo"] = descripcion.upper()
-            st.session_state["caneca"] = caneca
-            st.session_state["clasificado"] = True
+if st.session_state.get("error_clasificacion", False):
+    st.warning(
+        "No pudimos identificar este residuo. "
+        "Prueba con una descripción más específica."
+    )
 
-if st.session_state.get("clasificado", False):
 
-    caneca = st.session_state["caneca"]
-    residuo = st.session_state["residuo"]
+# ==========================================
+# MOSTRAR RESULTADO
+# ==========================================
 
-    nombres = {
-        "BLANCA": "Aprovechables",
-        "NEGRA": "No aprovechables",
-        "VERDE": "Orgánicos aprovechables"
-    }
+resultado = st.session_state.get("resultado_residuo")
 
-    emojis = {
-        "BLANCA": "♻️",
-        "NEGRA": "🗑️",
-        "VERDE": "🌱"
-    }
+if resultado:
+
+    caneca = resultado["caneca"]
+    residuo = st.session_state["descripcion_residuo"]
 
     st.divider()
     st.subheader("Resultado de identificación")
 
-    st.success(
-        f"Residuo identificado: {residuo}"
-    )
+    st.success(f"Residuo identificado: {residuo}")
 
-    st.markdown(
-        f"## {emojis[caneca]} Caneca {caneca}"
-    )
+    if caneca == "BLANCA":
+        st.markdown("## ⚪ Caneca BLANCA")
 
-    st.write(nombres[caneca])
+    elif caneca == "NEGRA":
+        st.markdown("## ⚫ Caneca NEGRA")
 
-    if st.button("🚀 Enviar a EcoStation", type="primary"):
+    elif caneca == "VERDE":
+        st.markdown("## 🟢 Caneca VERDE")
 
-        try:
-            client, mensajes, conectado, suscrito = crear_conexion()
+    else:
+        st.markdown("## ♻️ Residuo de manejo especial")
 
-            if not conectado.wait(timeout=10):
-                st.error("No se pudo conectar al broker MQTT.")
-                st.stop()
+    st.write(resultado["mensaje"])
 
-            if not suscrito.wait(timeout=10):
-                st.error("No se pudo suscribir al tópico de respuestas.")
-                st.stop()
+    # ======================================
+    # ENVIAR A ESTACION
+    # ======================================
 
-            # Limpiar respuestas anteriores
-            while not mensajes.empty():
-                try:
-                    mensajes.get_nowait()
-                except queue.Empty:
-                    break
+    if caneca:
 
-            # Preparar mensaje para Wokwi
-            mensaje = f"{residuo[:20]}|{caneca}"
+        if st.button("🚀 Enviar a EcoStation", type="primary"):
 
-            resultado = client.publish(
-                TOPIC_CONTROL,
-                mensaje
-            )
+            try:
+                client, mensajes, conectado, suscrito = crear_conexion()
 
-            if resultado.rc == mqtt.MQTT_ERR_SUCCESS:
+                if not conectado.wait(timeout=10):
+                    st.error("No se pudo conectar al broker MQTT.")
+                    st.stop()
 
-                st.info("Orden enviada a EcoStation.")
+                if not suscrito.wait(timeout=10):
+                    st.error("No se pudo suscribir al tópico de respuestas.")
+                    st.stop()
 
-                respuesta = None
-                limite = time.time() + 10
+                # Limpiar respuestas anteriores
+                while not mensajes.empty():
+                    try:
+                        mensajes.get_nowait()
+                    except queue.Empty:
+                        break
 
-                with st.spinner("Esperando respuesta de la estación..."):
+                # Enviar mensaje
+                residuo_mqtt = caneca
+                mensaje = f"{residuo_mqtt}|{caneca}"
 
-                    while time.time() < limite:
-                        try:
-                            dato = mensajes.get(timeout=0.5)
+                resultado_envio = client.publish(
+                    TOPIC_CONTROL,
+                    mensaje
+                )
 
-                            if dato == f"OK|{residuo[:20]}|{caneca}":
-                                respuesta = dato
-                                break
+                if resultado_envio.rc == mqtt.MQTT_ERR_SUCCESS:
 
-                        except queue.Empty:
-                            pass
+                    st.info("Orden enviada a EcoStation.")
 
-                if respuesta:
-                    st.success(
-                        f"¡EcoStation confirmó la operación! {respuesta}"
-                    )
+                    respuesta = None
+                    limite = time.time() + 10
+
+                    with st.spinner("Esperando respuesta del ESP32..."):
+
+                        while time.time() < limite:
+                            try:
+                                dato = mensajes.get(timeout=0.5)
+
+                                if dato == f"OK|{residuo_mqtt}|{caneca}":
+                                    respuesta = dato
+                                    break
+
+                            except queue.Empty:
+                                pass
+
+                    if respuesta:
+                        st.success(
+                            f"¡EcoStation confirmó la operación! {respuesta}"
+                        )
+                    else:
+                        st.warning(
+                            "La orden fue enviada, pero no recibimos "
+                            "confirmación de la estación."
+                        )
+
                 else:
-                    st.warning(
-                        "La orden fue enviada, pero no recibimos "
-                        "confirmación de la estación."
-                    )
+                    st.error("No se pudo enviar la orden MQTT.")
 
-            else:
-                st.error("No se pudo enviar la orden MQTT.")
+            except Exception as e:
+                st.error(f"Error de comunicación: {e}")
 
-        except Exception as e:
-            st.error(f"Error de comunicación: {e}")
+
+# ==========================================
+# GUIA DE SEPARACION
+# ==========================================
 
 st.divider()
 
@@ -253,16 +470,26 @@ col1, col2, col3 = st.columns(3)
 
 with col1:
     st.markdown("### ⚪ Blanca")
-    st.write("Papel, cartón, plástico, vidrio y metales limpios.")
+    st.write(
+        "Papel, cartón, plástico, vidrio y metales "
+        "limpios y secos."
+    )
 
 with col2:
     st.markdown("### ⚫ Negra")
-    st.write("Residuos no aprovechables y contaminados.")
+    st.write(
+        "Residuos no aprovechables y materiales "
+        "contaminados."
+    )
 
 with col3:
     st.markdown("### 🟢 Verde")
-    st.write("Restos de comida y residuos orgánicos.")
+    st.write(
+        "Restos de comida y residuos orgánicos aprovechables."
+    )
 
 st.divider()
 
-st.caption("EcoScan | Reciclaje inteligente multimodal")
+st.caption(
+    "EcoScan | Reciclaje inteligente multimodal"
+)
