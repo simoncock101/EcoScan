@@ -221,6 +221,7 @@ RESIDUOS_ESPECIALES = [
     "aparato electronico"
 ]
 
+
 # ==========================================
 # CLASIFICADOR
 # ==========================================
@@ -338,6 +339,7 @@ if st.button("🔍 Identificar residuo", type="primary"):
 
     st.session_state.pop("resultado_residuo", None)
     st.session_state.pop("descripcion_residuo", None)
+    st.session_state.pop("error_clasificacion", None)
 
     resultado = clasificar_residuo(descripcion)
 
@@ -412,8 +414,10 @@ if resultado:
                     except queue.Empty:
                         break
 
-                # Enviar mensaje
-                residuo_mqtt = caneca
+                # Preparar nombre corto para LCD
+                residuo_mqtt = normalizar(descripcion).upper()
+                residuo_mqtt = residuo_mqtt[:8].replace(" ", "_")
+
                 mensaje = f"{residuo_mqtt}|{caneca}"
 
                 resultado_envio = client.publish(
@@ -423,7 +427,7 @@ if resultado:
 
                 if resultado_envio.rc == mqtt.MQTT_ERR_SUCCESS:
 
-                    st.info("Orden enviada a EcoStation.")
+                    st.info(f"Orden enviada a EcoStation: {mensaje}")
 
                     respuesta = None
                     limite = time.time() + 10
