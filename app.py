@@ -72,7 +72,11 @@ with st.sidebar:
 
     st.markdown("### Navegación")
 
-    st.markdown("🏠 **Inicio**")
+    st.page_link(
+        "app.py",
+        label="Inicio",
+        icon="🏠"
+    )
 
     st.page_link(
         "pages/1_EcoScan.py",
