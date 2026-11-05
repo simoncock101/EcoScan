@@ -13,46 +13,100 @@ st.set_page_config(
 )
 
 # ==========================================
-# ESTILOS
+# ESTILOS GENERALES
 # ==========================================
 
 st.markdown("""
 <style>
 
+/* FONDO GENERAL */
 .stApp {
     background-color: #F5F8F3;
+    color: #26382D;
 }
 
+/* TEXTOS GENERALES */
+.stApp p,
+.stApp span,
+.stApp label,
+.stApp li {
+    color: #35483B;
+}
+
+/* TÍTULOS */
+h1, h2, h3, h4 {
+    color: #205C3B !important;
+}
+
+/* BARRA LATERAL */
 section[data-testid="stSidebar"] {
     background-color: #E8F0E5;
 }
 
+section[data-testid="stSidebar"] * {
+    color: #26382D !important;
+}
+
+/* TÍTULO PRINCIPAL */
 .main-title {
     font-size: 48px;
     font-weight: 800;
-    color: #205C3B;
+    color: #205C3B !important;
     margin-bottom: 0;
 }
 
 .subtitle {
-    color: #607568;
+    color: #52665A !important;
     font-size: 18px;
 }
 
+/* TARJETAS */
 .info-card {
-    background: white;
+    background: #FFFFFF;
     padding: 25px;
     border-radius: 18px;
-    border: 1px solid #E1E9DF;
+    border: 1px solid #DCE7DC;
     min-height: 190px;
 }
 
 .info-card h3 {
-    color: #205C3B;
+    color: #205C3B !important;
 }
 
 .info-card p {
-    color: #52665A;
+    color: #52665A !important;
+}
+
+/* BOTONES */
+.stButton button {
+    background-color: #205C3B;
+    color: #FFFFFF !important;
+    border: none;
+    border-radius: 10px;
+}
+
+.stButton button p {
+    color: #FFFFFF !important;
+}
+
+.stButton button:hover {
+    background-color: #17472D;
+    color: #FFFFFF !important;
+}
+
+/* MENSAJES INFORMATIVOS */
+[data-testid="stAlert"] {
+    background-color: #E5F1E5;
+    color: #205C3B;
+}
+
+[data-testid="stAlert"] p {
+    color: #205C3B !important;
+}
+
+/* ENLACES */
+a {
+    color: #205C3B !important;
 }
 
 </style>
@@ -60,7 +114,7 @@ section[data-testid="stSidebar"] {
 
 
 # ==========================================
-# NAVEGACIÓN LATERAL
+# BARRA LATERAL Y NAVEGACIÓN
 # ==========================================
 
 with st.sidebar:
@@ -125,7 +179,7 @@ with col1:
         Identifica residuos mediante fotografías, mensajes de voz
         o descripciones escritas y recomienda su clasificación.
         </p>
-        <b>Reconocimiento multimodal</b>
+        <b style="color:#205C3B;">Reconocimiento multimodal</b>
     </div>
     """, unsafe_allow_html=True)
 
@@ -148,7 +202,7 @@ with col2:
         Visualiza la clasificación y comunica la categoría
         identificada al ESP32 para mover una flecha indicadora.
         </p>
-        <b>Interacción con hardware simulado</b>
+        <b style="color:#205C3B;">Interacción con hardware simulado</b>
     </div>
     """, unsafe_allow_html=True)
 
