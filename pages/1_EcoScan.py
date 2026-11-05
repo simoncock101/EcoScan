@@ -31,7 +31,7 @@ PORT = 1883
 TOPIC_CONTROL = "ecoscan/estacion/control"
 TOPIC_ESTADO = "ecoscan/estacion/estado"
 
-MODELO_GEMINI = "gemini-flash-latest"
+MODELO_GEMINI = "gemini-3.8-flash"
 
 
 # ==========================================
