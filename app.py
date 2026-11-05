@@ -60,7 +60,7 @@ section[data-testid="stSidebar"] {
 
 
 # ==========================================
-# BARRA LATERAL
+# NAVEGACIÓN LATERAL
 # ==========================================
 
 with st.sidebar:
@@ -72,23 +72,13 @@ with st.sidebar:
 
     st.markdown("### Navegación")
 
-    st.page_link(
-        "app.py",
-        label="Inicio",
-        icon="🏠"
-    )
+    st.markdown("🏠 **Inicio**")
 
-    st.page_link(
-        "pages/1_EcoScan.py",
-        label="EcoScan",
-        icon="📷"
-    )
+    if st.button("📷 EcoScan", use_container_width=True):
+        st.switch_page("pages/1_EcoScan.py")
 
-    st.page_link(
-        "pages/2_EcoStation.py",
-        label="EcoStation",
-        icon="🗑️"
-    )
+    if st.button("🗑️ EcoStation", use_container_width=True):
+        st.switch_page("pages/2_EcoStation.py")
 
     st.divider()
 
@@ -139,6 +129,15 @@ with col1:
     </div>
     """, unsafe_allow_html=True)
 
+    st.write("")
+
+    if st.button(
+        "Comenzar a clasificar →",
+        key="ir_ecoscan",
+        use_container_width=True
+    ):
+        st.switch_page("pages/1_EcoScan.py")
+
 
 with col2:
 
@@ -152,6 +151,15 @@ with col2:
         <b>Interacción con hardware simulado</b>
     </div>
     """, unsafe_allow_html=True)
+
+    st.write("")
+
+    if st.button(
+        "Ver estación inteligente →",
+        key="ir_ecostation",
+        use_container_width=True
+    ):
+        st.switch_page("pages/2_EcoStation.py")
 
 
 st.write("")
